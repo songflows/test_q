@@ -1,51 +1,155 @@
 version: '3.8'
 
 services:
+  # PostgreSQL Database
   db:
-    image: postgres:15
+    image: postgres:15-alpine
     container_name: queue_app_db
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: queue_app
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-queue_app}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       - queue_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-queue_app}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  # Redis Cache & Message Broker
   redis:
     image: redis:7-alpine
     container_name: queue_app_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_password}
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
     networks:
       - queue_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
+  # FastAPI Backend
   backend:
     build: 
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        ENVIRONMENT: ${ENVIRONMENT:-development}
     container_name: queue_app_backend
+    restart: unless-stopped
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/queue_app
-      - REDIS_URL=redis://redis:6379
-      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-queue_app}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379
+      - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-change-in-production}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DEBUG=${DEBUG:-true}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-["*"]}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - FACEBOOK_APP_ID=${FACEBOOK_APP_ID:-}
+      - FACEBOOK_APP_SECRET=${FACEBOOK_APP_SECRET:-}
+      - QR_CODE_BASE_URL=${QR_CODE_BASE_URL:-http://localhost:8000}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-11520}
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./backend:/app
+      - backend_uploads:/app/uploads
     networks:
       - queue_network
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    entrypoint: ["/app/docker-entrypoint.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx Reverse Proxy (Optional for production)
+  nginx:
+    image: nginx:alpine
+    container_name: queue_app_nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - nginx_logs:/var/log/nginx
+      - backend_uploads:/var/www/uploads:ro
+    depends_on:
+      - backend
+    networks:
+      - queue_network
+    profiles:
+      - production
+
+  # Adminer for database management (Development only)
+  adminer:
+    image: adminer:latest
+    container_name: queue_app_adminer
+    restart: unless-stopped
+    ports:
+      - "${ADMINER_PORT:-8080}:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    depends_on:
+      - db
+    networks:
+      - queue_network
+    profiles:
+      - development
+
+  # Redis Commander for Redis management (Development only)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: queue_app_redis_commander
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: "local:redis:6379:0:${REDIS_PASSWORD:-redis_password}"
+      HTTP_USER: ${REDIS_COMMANDER_USER:-admin}
+      HTTP_PASSWORD: ${REDIS_COMMANDER_PASSWORD:-admin}
+    ports:
+      - "${REDIS_COMMANDER_PORT:-8081}:8081"
+    depends_on:
+      - redis
+    networks:
+      - queue_network
+    profiles:
+      - development
 
 volumes:
   postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  backend_uploads:
+    driver: local
+  nginx_logs:
+    driver: local
 
 networks:
   queue_network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
