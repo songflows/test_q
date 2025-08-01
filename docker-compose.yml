@@ -14,6 +14,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - queue_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -22,6 +27,11 @@ services:
       - "6379:6379"
     networks:
       - queue_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   backend:
     build: 
@@ -35,13 +45,98 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./backend:/app
     networks:
       - queue_network
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    # Команда по умолчанию - dev сервер
+    command: ["dev"]
+
+  # Отдельный сервис для продакшн режима
+  backend-prod:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: queue_app_backend_prod
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/queue_app
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=production
+    ports:
+      - "8001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - queue_network
+    command: ["prod"]
+    profiles:
+      - production
+
+  # Сервис для миграций
+  migrator:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/queue_app
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - queue_network
+    command: ["migrate"]
+    profiles:
+      - tools
+
+  # Сервис для тестов
+  backend-test:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/queue_app
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=test
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - queue_network
+    command: ["test"]
+    profiles:
+      - test
+
+  # Nginx для продакшн (опционально)
+  nginx:
+    image: nginx:alpine
+    container_name: queue_app_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend-prod
+    networks:
+      - queue_network
+    profiles:
+      - production
 
 volumes:
   postgres_data:
