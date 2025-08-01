@@ -1,0 +1,89 @@
+# =================================================================
+# QUEUE MANAGEMENT SYSTEM - ENHANCED DEVELOPMENT COMPOSE
+# =================================================================
+
+version: '3.8'
+
+services:
+  backend:
+    entrypoint: ["/app/docker-entrypoint-dev.sh"]
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - PYTHONPATH=/app
+      - WATCHDOG_ENABLED=true
+    volumes:
+      - ./backend:/app
+      - ./scripts:/app/scripts
+      - dev_cache:/root/.cache
+    ports:
+      - "8000:8000"
+      - "5678:5678"  # debugpy port
+    stdin_open: true
+    tty: true
+
+  # Jupyter notebook for development
+  jupyter:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: queue_app_jupyter
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=dev123
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./backend:/app
+      - ./notebooks:/app/notebooks
+    command: >
+      bash -c "
+        pip install jupyter jupyterlab &&
+        mkdir -p /app/notebooks &&
+        jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='dev123'
+      "
+    depends_on:
+      - db
+      - redis
+    networks:
+      - queue_network
+    profiles:
+      - jupyter
+
+  # Database GUI (pgAdmin)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: queue_app_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@demo.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_LISTEN_PORT: 80
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - db
+    networks:
+      - queue_network
+    profiles:
+      - pgadmin
+
+  # MailHog for email testing
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: queue_app_mailhog
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - queue_network
+    profiles:
+      - mailhog
+
+volumes:
+  dev_cache:
+    driver: local
+  pgadmin_data:
+    driver: local

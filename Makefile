@@ -26,6 +26,10 @@ dev: ## Start development environment
 	@echo "🚀 Starting development environment..."
 	docker-compose $(COMPOSE_DEV) up -d
 
+dev-enhanced: ## Start enhanced development environment with sample data
+	@echo "🚀 Starting enhanced development environment..."
+	docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+
 dev-build: ## Build and start development environment
 	@echo "🔨 Building and starting development environment..."
 	docker-compose $(COMPOSE_DEV) up -d --build

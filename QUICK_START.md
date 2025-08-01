@@ -24,6 +24,9 @@ cp .env.example .env
 ```bash
 # Быстрая установка и запуск
 make setup
+
+# Расширенный development режим с demo-данными
+make dev-enhanced
 ```
 
 ### 3. Альтернативный запуск с Docker Compose
