@@ -95,6 +95,17 @@ migrate: ## Run database migrations
 migration: ## Create new migration (use MESSAGE="description")
 	docker-compose exec $(SERVICE_BACKEND) alembic revision --autogenerate -m "$(MESSAGE)"
 
+init-db: ## Initialize database with sample data
+	docker-compose --profile init run --rm db-init
+
+reset-db: ## Reset database (WARNING: destroys all data)
+	@echo "⚠️  WARNING: This will destroy all data! Press Ctrl+C to cancel..."
+	@sleep 5
+	docker-compose exec $(SERVICE_DB) dropdb -U postgres queue_app --if-exists
+	docker-compose exec $(SERVICE_DB) createdb -U postgres queue_app
+	$(MAKE) migrate
+	$(MAKE) init-db
+
 # =================================================================
 # REDIS COMMANDS
 # =================================================================
@@ -113,13 +124,23 @@ redis-flush: ## Flush all Redis data
 # =================================================================
 
 test: ## Run backend tests
-	docker-compose exec $(SERVICE_BACKEND) pytest
+	docker-compose --profile testing up -d backend-test
+	docker-compose logs -f backend-test
+
+test-unit: ## Run unit tests only
+	docker-compose exec $(SERVICE_BACKEND) pytest tests/unit/
+
+test-integration: ## Run integration tests only
+	docker-compose exec $(SERVICE_BACKEND) pytest tests/integration/
 
 test-cov: ## Run tests with coverage
-	docker-compose exec $(SERVICE_BACKEND) pytest --cov=app --cov-report=html
+	docker-compose --profile testing run --rm backend-test --coverage
 
 test-watch: ## Run tests in watch mode
 	docker-compose exec $(SERVICE_BACKEND) pytest -f
+
+test-quality: ## Run tests with quality checks
+	docker-compose --profile testing run --rm backend-test --verbose
 
 # =================================================================
 # CODE QUALITY COMMANDS
@@ -220,10 +241,19 @@ install: setup ## Alias for setup
 
 backup: ## Create full backup (database + uploads)
 	@echo "💾 Creating full backup..."
+	docker-compose --profile backup run --rm backup
+
+backup-quick: ## Quick database backup only
+	@echo "💾 Creating database backup..."
+	mkdir -p backups
+	docker-compose exec $(SERVICE_DB) pg_dump -U postgres queue_app > backups/backup_$(shell date +%Y%m%d_%H%M%S).sql
+	@echo "✅ Database backup created"
+
+backup-files: ## Backup uploaded files only
+	@echo "💾 Backing up files..."
 	mkdir -p backups/$(shell date +%Y%m%d_%H%M%S)
-	$(MAKE) db-backup
 	docker cp $$(docker-compose ps -q backend):/app/uploads ./backups/$(shell date +%Y%m%d_%H%M%S)/
-	@echo "✅ Backup created in backups/$(shell date +%Y%m%d_%H%M%S)/"
+	@echo "✅ Files backup created"
 
 # =================================================================
 # ENVIRONMENT INFO

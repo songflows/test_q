@@ -1,0 +1,120 @@
+# =================================================================
+# QUEUE MANAGEMENT SYSTEM - DOCKER COMPOSE OVERRIDE
+# =================================================================
+# This file provides additional configurations for different scenarios
+
+version: '3.8'
+
+services:
+  # Development override
+  backend:
+    profiles:
+      - development
+    volumes:
+      - ./backend:/app
+      - ./scripts:/app/scripts
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+    entrypoint: ["/app/docker-entrypoint.sh"]
+
+  # Testing service
+  backend-test:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: queue_app_backend_test
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/queue_app_test
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/1
+      - ENVIRONMENT=test
+      - DEBUG=false
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - ./scripts:/app/scripts
+    networks:
+      - queue_network
+    entrypoint: ["/app/scripts/test-entrypoint.sh"]
+    profiles:
+      - testing
+
+  # Production backend with optimized entrypoint
+  backend-prod:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    container_name: queue_app_backend_prod
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-queue_app}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - WORKERS=${WORKERS:-4}
+      - MAX_REQUESTS=${MAX_REQUESTS:-1000}
+      - TIMEOUT=${TIMEOUT:-30}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - backend_uploads:/app/uploads
+      - ./scripts:/app/scripts
+    networks:
+      - queue_network
+    entrypoint: ["/app/scripts/production-entrypoint.sh"]
+    profiles:
+      - production
+
+  # Database initialization service
+  db-init:
+    image: postgres:15-alpine
+    container_name: queue_app_db_init
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-queue_app}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - queue_network
+    entrypoint: ["/scripts/init-db.sh"]
+    profiles:
+      - init
+
+  # Backup service
+  backup:
+    image: postgres:15-alpine
+    container_name: queue_app_backup
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-queue_app}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backups:/backups
+      - ./scripts:/scripts
+    networks:
+      - queue_network
+    entrypoint: ["/scripts/backup.sh"]
+    profiles:
+      - backup
