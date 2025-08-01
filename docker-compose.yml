@@ -14,6 +14,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - queue_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -22,7 +27,13 @@ services:
       - "6379:6379"
     networks:
       - queue_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  # Основной backend сервис для разработки
   backend:
     build: 
       context: ./backend
@@ -35,13 +46,144 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./backend:/app
     networks:
       - queue_network
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: ["server-dev"]
+
+  # Production backend сервис
+  backend-prod:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: queue_app_backend_prod
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/queue_app
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=production
+    ports:
+      - "8001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - queue_network
+    command: ["server"]
+    profiles:
+      - production
+
+  # Сервис для миграций
+  backend-migrate:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/queue_app
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - queue_network
+    command: ["migrate"]
+    profiles:
+      - migration
+
+  # Сервис для создания таблиц
+  backend-init:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/queue_app
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - queue_network
+    command: ["create-tables"]
+    profiles:
+      - init
+
+  # Сервис для тестов
+  backend-test:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/queue_app_test
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=testing
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - queue_network
+    command: ["test"]
+    profiles:
+      - test
+
+  # Background worker сервис
+  backend-worker:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: queue_app_worker
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/queue_app
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - queue_network
+    command: ["worker"]
+    profiles:
+      - worker
+
+  # Scheduler сервис
+  backend-scheduler:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: queue_app_scheduler
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/queue_app
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - queue_network
+    command: ["scheduler"]
+    profiles:
+      - scheduler
 
 volumes:
   postgres_data:
